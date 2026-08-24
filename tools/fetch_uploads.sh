@@ -7,8 +7,15 @@
 # server never needs the ~13 GB of free space that zipping would demand. No file
 # in uploads/ is read-only-violated, renamed, or modified.
 #
+# Run this FROM YOUR MAC, not from inside an ssh session. rsync/lftp/tar open the
+# connection themselves and pull toward you. Running them on the server would put
+# the copy back on the server, which is the space problem you're avoiding.
+#
 # Usage:  ./tools/fetch_uploads.sh <method> [dest]
-# Methods: rsync | rsync-originals | tar | lftp | wget
+# Methods: check | rsync | rsync-originals | tar | lftp | wget
+#
+# Start with `check` -- it confirms the remote path and reports the real size
+# before you commit to a multi-hour transfer.
 #
 set -euo pipefail
 
@@ -30,6 +37,27 @@ mkdir -p "$DEST"
 THUMB_GLOB='*-[0-9]*x[0-9]*.*'
 
 case "$METHOD" in
+
+  check)
+    # Read-only sanity check before committing to a long transfer: does the path
+    # exist, how big is it really, and does this server even have rsync?
+    ssh "${SSH_USER}@${SSH_HOST}" bash -s <<EOF
+set -e
+if [ ! -d "$REMOTE_UPLOADS" ]; then
+  echo "NOT FOUND: $REMOTE_UPLOADS"
+  echo "Looking for wp-content/uploads in the usual places:"
+  ls -d ~/public_html/wp-content/uploads /var/www/*/wp-content/uploads \
+        /home/*/public_html/wp-content/uploads /usr/share/nginx/*/wp-content/uploads \
+        2>/dev/null || echo "  (none found -- check your host's control panel for the docroot)"
+  exit 1
+fi
+echo "path   : $REMOTE_UPLOADS"
+echo -n "size   : "; du -sh "$REMOTE_UPLOADS" | cut -f1
+echo -n "files  : "; find "$REMOTE_UPLOADS" -type f | wc -l
+echo -n "free   : "; df -h "$REMOTE_UPLOADS" | awk 'NR==2{print \$4" available"}'
+echo -n "rsync  : "; command -v rsync || echo "NOT INSTALLED -- use the lftp method instead"
+EOF
+    ;;
 
   rsync)
     # Best default: resumable, verifies as it goes, re-runnable to pick up new
@@ -78,8 +106,19 @@ for r in csv.DictReader(open('data/media-manifest.csv')):
     ;;
 
   *)
-    echo "unknown method: $METHOD" >&2
-    sed -n '2,12p' "$0" >&2
+    cat >&2 <<'USAGE'
+unknown method.
+
+  ./tools/fetch_uploads.sh check             confirm the remote path and size
+  ./tools/fetch_uploads.sh rsync ./uploads   everything, resumable (start here)
+  ./tools/fetch_uploads.sh rsync-originals   skip thumbnails: 8.5 GB not 13.2 GB
+  ./tools/fetch_uploads.sh tar ./uploads     one fast pass, not resumable
+  ./tools/fetch_uploads.sh lftp ./uploads    FTP only, no shell access
+  ./tools/fetch_uploads.sh wget ./uploads    no server access at all, over HTTPS
+
+Run from your Mac, not from inside an ssh session.
+Set SSH_USER, SSH_HOST and REMOTE_UPLOADS first.
+USAGE
     exit 2
     ;;
 esac

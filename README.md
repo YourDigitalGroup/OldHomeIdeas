@@ -64,18 +64,48 @@ and GitHub's hard limits (100 MB per file, ~5 GB recommended per repo) rule it
 out. Git is for the *manifest*; the media belongs in object storage (S3, B2,
 Google Drive) or on a NAS.
 
+**And GitHub can't serve as the transfer route either.** To push the files to
+GitHub, something first has to *pull them off the server* — the identical
+problem — and then a git repo containing them needs roughly double the space
+locally (working tree plus `.git` objects), so ~26 GB for a 13 GB library. Git
+LFS doesn't rescue it: GitHub Free includes 1 GB of LFS storage and 1 GB of
+bandwidth per month against a 13 GB library. GitHub is a step *after* the
+download, not a substitute for it — and for media, not a step worth taking.
+
 ### 2. How to download 13 GB without server-side space
 
 The reason you can't zip it is that zipping needs room for a second copy of
 everything. The fix is to never create that copy — stream the bytes straight
-off disk to your machine:
+off disk to your machine.
+
+**Run these from your Mac, not from inside an SSH session.** `rsync`, `lftp` and
+`tar` open the connection themselves and pull toward you. Running them *on* the
+server would put the copy back on the server — the exact problem you're avoiding.
 
 ```bash
-export SSH_USER=youruser SSH_HOST=findhomeideas.com
-export REMOTE_UPLOADS=/var/www/findhomeideas.com/wp-content/uploads
+export SSH_USER=your-cpanel-user SSH_HOST=184.168.20.91
+export REMOTE_UPLOADS=/home/your-cpanel-user/public_html/wp-content/uploads
 
+./tools/fetch_uploads.sh check            # confirm the path and real size first
 ./tools/fetch_uploads.sh rsync ./uploads
 ```
+
+`check` is read-only: it verifies the path exists (and suggests candidates if it
+doesn't), reports the true size and file count, shows free space, and confirms
+the server actually has `rsync`. Worth 20 seconds before a multi-hour transfer.
+
+Two host-specific notes, since 184.168.20.91 is GoDaddy:
+
+- **GoDaddy cPanel / Web Hosting** — SSH exists but is off by default. Turn it on
+  in cPanel under *SSH Access*, then the user is your cPanel username and the
+  docroot is `/home/<cpanel-user>/public_html`. `rsync` is normally present.
+- **GoDaddy Managed WordPress** — no SSH at all, SFTP only. `rsync` and `tar`
+  won't work; use `./tools/fetch_uploads.sh lftp ./uploads`, which mirrors over
+  FTP with 8 parallel connections and resumes if it drops.
+
+On macOS 15 (Sequoia) Apple replaced `rsync` with `openrsync`, which doesn't
+support `--partial`/`--inplace`. Install the real one first — `brew install rsync`
+— or use the `tar` method.
 
 `rsync` reads the existing files and writes nothing on the server. It's
 resumable (`--partial`), re-runnable to pick up new files, and verifies as it
