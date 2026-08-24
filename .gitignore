@@ -1,0 +1,11 @@
+# Downloaded media — keep the manifest in git, not 13 GB of binaries
+uploads/
+by-company/
+urls.txt
+
+# Expanded export (regenerate with: unzip homeideas.WordPress.*.xml.zip)
+*.xml
+!data/*.xml
+
+__pycache__/
+.DS_Store
