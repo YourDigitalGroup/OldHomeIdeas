@@ -4,6 +4,56 @@ Tooling to pull `wp-content/uploads` off the findhomeideas.com server without
 using server-side disk space, and to record which company each of the 37,863
 files belongs to — without modifying anything in `uploads/`.
 
+## Quick start — the exact commands, in order
+
+Everything runs **from your Mac**. Nothing is written on the server.
+
+```bash
+# --- 0. one time: get this repo and check your rsync ---------------------------
+git clone https://github.com/YourDigitalGroup/OldHomeIdeas.git
+cd OldHomeIdeas
+git checkout claude/uploads-company-metadata-5lw60v
+rsync --version | head -1        # says "openrsync"? -> brew install rsync
+
+# --- 1. find the two things only the server knows ------------------------------
+ssh root@184.168.20.91 "find / -name wp-config.php -not -path '*/backup*' 2>/dev/null; command -v wp || echo 'NO WP-CLI'"
+
+# --- 2. point the tools at the site (WP_PATH = folder holding wp-config.php) ---
+export SSH_USER=root
+export SSH_HOST=184.168.20.91
+export WP_PATH=/var/www/findhomeideas.com
+
+# --- 3. attribution + orphan report, straight from the live database -----------
+./tools/db_manifest.sh all
+python3 tools/reconcile.py
+
+# --- 4. LOOK at this before transferring 13 GB --------------------------------
+head -50 data/orphans.csv
+open data/companies.csv
+
+# --- 5. download (read-only, resumable, capped at ~5 MB/s) --------------------
+export REMOTE_UPLOADS=$(./tools/db_manifest.sh path)
+./tools/fetch_uploads.sh check
+./tools/fetch_uploads.sh rsync ./uploads
+
+# --- 6. confirm it all arrived intact ----------------------------------------
+python3 tools/verify_download.py ./uploads
+
+# --- 7. build the per-company view (hard links, costs ~nothing) --------------
+python3 tools/organize_by_company.py ./uploads ./by-company \
+    --manifest data/attribution.csv
+```
+
+Step 3 needs **wp-cli** on the server. If step 1 printed `NO WP-CLI`:
+
+```bash
+ssh root@184.168.20.91 'curl -sO https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
+  && chmod +x wp-cli.phar && mv wp-cli.phar /usr/local/bin/wp && wp --info --allow-root'
+```
+
+Only steps 5–7 are slow (about 45 minutes for the transfer). Steps 3, 5 and 6 are
+all re-runnable — rsync resumes where it left off.
+
 ## What the export actually contains
 
 `homeideas.WordPress.2026-08-24.xml` is a **media-only** export: 37,863
@@ -148,7 +198,7 @@ doesn't have the space to hold one.
 **Do sort a local copy into per-company folders, backed by a CSV manifest.**
 
 ```bash
-python3 tools/organize_by_company.py ./uploads ./by-company --include-sizes \
+python3 tools/organize_by_company.py ./uploads ./by-company \
     --manifest data/attribution.csv
 ```
 
@@ -217,7 +267,7 @@ export REMOTE_UPLOADS=$(./tools/db_manifest.sh path)
 python3 tools/verify_download.py ./uploads
 
 # 4. Build the per-company view (hard links, ~free)
-python3 tools/organize_by_company.py ./uploads ./by-company --include-sizes \
+python3 tools/organize_by_company.py ./uploads ./by-company \
     --manifest data/attribution.csv
 
 # 5. Only if the files need to travel alone — local copy only
