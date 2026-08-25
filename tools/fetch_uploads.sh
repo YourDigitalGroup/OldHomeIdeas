@@ -20,9 +20,9 @@
 set -euo pipefail
 
 # ---- configure ---------------------------------------------------------------
-SSH_USER="${SSH_USER:-youruser}"
-SSH_HOST="${SSH_HOST:-findhomeideas.com}"
-REMOTE_UPLOADS="${REMOTE_UPLOADS:-/var/www/findhomeideas.com/wp-content/uploads}"
+SSH_USER="${SSH_USER:-findhomeideas}"
+SSH_HOST="${SSH_HOST:-184.168.20.91}"
+REMOTE_UPLOADS="${REMOTE_UPLOADS:-/home/findhomeideas/public_html/wp-content/uploads}"
 FTP_USER="${FTP_USER:-$SSH_USER}"
 FTP_HOST="${FTP_HOST:-$SSH_HOST}"
 # ------------------------------------------------------------------------------

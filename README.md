@@ -15,13 +15,13 @@ cd OldHomeIdeas
 git checkout claude/uploads-company-metadata-5lw60v
 rsync --version | head -1        # says "openrsync"? -> brew install rsync
 
-# --- 1. find the two things only the server knows ------------------------------
-ssh root@184.168.20.91 "find / -name wp-config.php -not -path '*/backup*' 2>/dev/null; command -v wp || echo 'NO WP-CLI'"
+# --- 1. THE SITE IS CURRENTLY RETURNING HTTP 500 -- read the section below ----
+ssh findhomeideas@184.168.20.91 "df -h ~; ls -la ~/public_html/wp-config.php; tail -40 ~/public_html/error_log"
 
-# --- 2. point the tools at the site (WP_PATH = folder holding wp-config.php) ---
-export SSH_USER=root
+# --- 2. point the tools at the site -------------------------------------------
+export SSH_USER=findhomeideas
 export SSH_HOST=184.168.20.91
-export WP_PATH=/var/www/findhomeideas.com
+export WP_PATH=/home/findhomeideas/public_html
 
 # --- 3. attribution + orphan report, straight from the live database -----------
 ./tools/db_manifest.sh all
@@ -44,15 +44,59 @@ python3 tools/organize_by_company.py ./uploads ./by-company \
     --manifest data/attribution.csv
 ```
 
-Step 3 needs **wp-cli** on the server. If step 1 printed `NO WP-CLI`:
-
-```bash
-ssh root@184.168.20.91 'curl -sO https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
-  && chmod +x wp-cli.phar && mv wp-cli.phar /usr/local/bin/wp && wp --info --allow-root'
-```
+> **Step 3 is blocked right now.** `wp-config.php` is 0 bytes, and
+> findhomeideas.com returns HTTP 500. wp-cli reads the database credentials from
+> that file, so no DB query can run until it is restored. See
+> [The site is down](#the-site-is-down-fix-this-first).
+>
+> **Steps 5–7 are not blocked.** rsync works at the filesystem level and needs
+> neither PHP nor MySQL, and static media still serves fine (verified: a 1 MB
+> JPEG returns HTTP 200). You can pull the media down today. You just won't have
+> `attribution.csv` until the site is fixed — use `--manifest
+> data/media-manifest.csv` in step 7 meanwhile, which is the 99.76% version built
+> from the XML export.
 
 Only steps 5–7 are slow (about 45 minutes for the transfer). Steps 3, 5 and 6 are
 all re-runnable — rsync resumes where it left off.
+
+## The site is down — fix this first
+
+As of 2026-08-25, `https://findhomeideas.com/` returns **HTTP 500 with an empty
+body**, while `wp-content/uploads/...jpg` returns **HTTP 200**. Apache is healthy
+and static files serve; PHP/WordPress is failing.
+
+The cause is almost certainly that **`public_html/wp-config.php` is 0 bytes**
+(modified 09:04, with `error_log` written at 09:06). WordPress cannot start
+without the database constants in that file.
+
+**Why it may have been truncated: the disk is probably full.** A write to a file
+while the filesystem is full leaves it at zero length — and "not enough space to
+zip the uploads folder" is the same symptom from the other end. If that is what
+happened, the root cause is still present and will recur.
+
+Diagnose (all read-only):
+
+```bash
+ssh findhomeideas@184.168.20.91
+df -h ~                                   # is the disk actually full?
+ls -la ~/public_html/wp-config.php        # confirm 0 bytes
+tail -40 ~/public_html/error_log          # what PHP is complaining about
+du -sh ~/wordpress-backups ~/.trash ~/tmp ~/logs 2>/dev/null | sort -h
+```
+
+`~/wordpress-backups` is worth a hard look: it is both the most likely place to
+recover `wp-config.php` from *and* a prime suspect for consuming the disk.
+
+```bash
+grep -rl DB_PASSWORD ~/wordpress-backups/ 2>/dev/null | head
+```
+
+If no backup has it, rebuild the file rather than hunting: the database name and
+user are listed in cPanel under *MySQL Databases*, you can reset that user's
+password there, and fresh salts come from
+`https://api.wordpress.org/secret-key/1.1/salt/`. `wp-config-sample.php` is still
+present as the template. Do not restore from a backup taken after 09:04 without
+checking it first.
 
 ## What the export actually contains
 

@@ -26,11 +26,13 @@
 #
 set -euo pipefail
 
-SSH_USER="${SSH_USER:-root}"
+SSH_USER="${SSH_USER:-findhomeideas}"
 SSH_HOST="${SSH_HOST:-184.168.20.91}"
 # WordPress root on the server (the folder holding wp-config.php).
-# Don't know it? ssh in and: find / -name wp-config.php -not -path '*/backup*' 2>/dev/null
-WP_PATH="${WP_PATH:-/var/www/findhomeideas.com}"
+# NOTE: as of 2026-08-25 that wp-config.php is 0 bytes and the site returns HTTP
+# 500, so wp-cli cannot read the DB credentials and these modes will fail until
+# it is restored. See "The site is down" in README.md.
+WP_PATH="${WP_PATH:-/home/findhomeideas/public_html}"
 
 MODE="${1:-all}"
 mkdir -p data
