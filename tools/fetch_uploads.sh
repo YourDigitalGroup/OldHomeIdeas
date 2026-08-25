@@ -36,6 +36,14 @@ mkdir -p "$DEST"
 # (wp media regenerate), so they are usually not worth archiving.
 THUMB_GLOB='*-[0-9]*x[0-9]*.*'
 
+# This is a live production site. Pulling 13 GB flat-out competes with real
+# visitors for the VPS's uplink and disk. BWLIMIT caps the transfer (KB/s);
+# 5000 = ~5 MB/s, which still finishes 13 GB in about 45 minutes. Set
+# BWLIMIT=0 to disable the cap.
+BWLIMIT="${BWLIMIT:-5000}"
+RSYNC_OPTS=(-avh --progress --partial --inplace)
+[ "$BWLIMIT" != "0" ] && RSYNC_OPTS+=("--bwlimit=$BWLIMIT")
+
 case "$METHOD" in
 
   check)
@@ -63,7 +71,7 @@ EOF
     # Best default: resumable, verifies as it goes, re-runnable to pick up new
     # files. --partial keeps half-transferred files so a dropped connection
     # resumes instead of restarting.
-    exec rsync -avh --progress --partial --inplace \
+    exec rsync "${RSYNC_OPTS[@]}" \
       "${SSH_USER}@${SSH_HOST}:${REMOTE_UPLOADS}/" "$DEST/"
     ;;
 
@@ -71,8 +79,7 @@ EOF
     # Same, minus the generated thumbnail sizes.
     # NOTE: this glob would also skip a genuine file named like "plan-10x12.jpg".
     # Run tools/verify_download.py afterward to see exactly what was skipped.
-    exec rsync -avh --progress --partial --inplace \
-      --exclude="$THUMB_GLOB" \
+    exec rsync "${RSYNC_OPTS[@]}" --exclude="$THUMB_GLOB" \
       "${SSH_USER}@${SSH_HOST}:${REMOTE_UPLOADS}/" "$DEST/"
     ;;
 

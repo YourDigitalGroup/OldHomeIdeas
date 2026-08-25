@@ -35,9 +35,11 @@ convention.
 silently blending in with the certain ones.
 
 The 89 unresolved files are all Vimeo video thumbnails (`vimeo-1149744418-video-image`)
-with no company anywhere in the name. They *do* have a `post_parent`, so if you
-run a **second export with "All content" selected**, the parent post's author
-resolves them. See [Closing the last 89](#closing-the-last-89).
+with no company anywhere in the name. They *do* have a `post_parent`, so the
+parent post's author resolves them — and with root on the VPS you can reach that
+with one SQL join instead of a second export. See
+[Better: skip the export, query the database](#better-skip-the-export-query-the-database),
+which also gets you to 100% and finds files no export can see.
 
 ### Two data quirks worth knowing before you sync anything
 
@@ -83,8 +85,8 @@ off disk to your machine.
 server would put the copy back on the server — the exact problem you're avoiding.
 
 ```bash
-export SSH_USER=your-cpanel-user SSH_HOST=184.168.20.91
-export REMOTE_UPLOADS=/home/your-cpanel-user/public_html/wp-content/uploads
+export SSH_USER=root SSH_HOST=184.168.20.91
+export REMOTE_UPLOADS=$(./tools/db_manifest.sh path)   # ask WordPress, don't guess
 
 ./tools/fetch_uploads.sh check            # confirm the path and real size first
 ./tools/fetch_uploads.sh rsync ./uploads
@@ -94,25 +96,20 @@ export REMOTE_UPLOADS=/home/your-cpanel-user/public_html/wp-content/uploads
 doesn't), reports the true size and file count, shows free space, and confirms
 the server actually has `rsync`. Worth 20 seconds before a multi-hour transfer.
 
-Two host-specific notes, since 184.168.20.91 is GoDaddy:
-
-- **GoDaddy cPanel / Web Hosting** — SSH exists but is off by default. Turn it on
-  in cPanel under *SSH Access*, then the user is your cPanel username and the
-  docroot is `/home/<cpanel-user>/public_html`. `rsync` is normally present.
-- **GoDaddy Managed WordPress** — no SSH at all, SFTP only. `rsync` and `tar`
-  won't work; use `./tools/fetch_uploads.sh lftp ./uploads`, which mirrors over
-  FTP with 8 parallel connections and resumes if it drops.
+The transfer is **bandwidth-capped to ~5 MB/s by default** (`BWLIMIT`, in KB/s).
+This is a live site, and pulling 13 GB flat-out competes with real visitors for
+the VPS's uplink and disk. 5 MB/s still finishes in about 45 minutes. Override
+with `BWLIMIT=0 ./tools/fetch_uploads.sh rsync ./uploads` if you don't care.
 
 On macOS 15 (Sequoia) Apple replaced `rsync` with `openrsync`, which doesn't
-support `--partial`/`--inplace`. Install the real one first — `brew install rsync`
-— or use the `tar` method.
+support `--partial`/`--inplace`. Check with `rsync --version`; if it's openrsync,
+`brew install rsync` — or use the `tar` method.
 
 `rsync` reads the existing files and writes nothing on the server. It's
 resumable (`--partial`), re-runnable to pick up new files, and verifies as it
-goes. If you only have FTP, `./tools/fetch_uploads.sh lftp` mirrors with 8
-parallel connections, which matters a lot across 37k small files. `tar` streams
-in one pass (fastest, not resumable), and `wget` pulls from the manifest URLs
-over HTTPS if you have no shell access at all.
+goes. `tar` streams in one pass (fastest, but not resumable), `lftp` mirrors over
+FTP with 8 parallel connections, and `wget` pulls from the manifest URLs over
+HTTPS — the last two matter less now that you have root, but they're there.
 
 **Take the originals only and you move 8.54 GB instead of 13.23 GB.** The 112,746
 thumbnails are all regenerable on any WordPress install with
@@ -151,7 +148,8 @@ doesn't have the space to hold one.
 **Do sort a local copy into per-company folders, backed by a CSV manifest.**
 
 ```bash
-python3 tools/organize_by_company.py ./uploads ./by-company --include-sizes
+python3 tools/organize_by_company.py ./uploads ./by-company --include-sizes \
+    --manifest data/attribution.csv
 ```
 
 ```
@@ -202,19 +200,25 @@ only**, and only after `verify_download.py` passes — it rewrites every file.
 ## Suggested order
 
 ```bash
-# 1. Rebuild the manifest from the export (already committed, but reproducible)
-python3 tools/build_manifest.py homeideas.WordPress.2026-08-24.xml
+export SSH_USER=root SSH_HOST=184.168.20.91
+export WP_PATH=/var/www/findhomeideas.com
 
-# 2. Pull the media down — nothing is written on the server
-export SSH_USER=youruser SSH_HOST=findhomeideas.com
-export REMOTE_UPLOADS=/var/www/findhomeideas.com/wp-content/uploads
+# 1. Authoritative attribution + orphan report, straight from the live DB
+./tools/db_manifest.sh all
+python3 tools/reconcile.py
+#    Read data/orphans.csv before transferring — you may not want all of it.
+
+# 2. Pull the media down — nothing is written on the server, capped at 5 MB/s
+export REMOTE_UPLOADS=$(./tools/db_manifest.sh path)
+./tools/fetch_uploads.sh check
 ./tools/fetch_uploads.sh rsync ./uploads
 
 # 3. Confirm it all arrived intact
 python3 tools/verify_download.py ./uploads
 
 # 4. Build the per-company view (hard links, ~free)
-python3 tools/organize_by_company.py ./uploads ./by-company --include-sizes
+python3 tools/organize_by_company.py ./uploads ./by-company --include-sizes \
+    --manifest data/attribution.csv
 
 # 5. Only if the files need to travel alone — local copy only
 ./tools/tag_metadata.sh ./uploads
@@ -223,13 +227,43 @@ python3 tools/organize_by_company.py ./uploads ./by-company --include-sizes
 `uploads/` and `by-company/` are gitignored. Keep the manifest in git; put the
 media in object storage.
 
-## Closing the last 89
+## Better: skip the export, query the database
 
-Those Vimeo thumbnails need the parent posts, which a media-only export omits.
-In WordPress: **Tools → Export → All content**. The new file will be larger but
-it carries the posts those attachments hang off, and each post's `dc:creator` is
-the company. `build_manifest.py` reads that export the same way — the
-`post_parent` column is already in the manifest waiting to be joined against it.
+With root on the VPS, the XML export stops being the best source — it's a
+snapshot with gaps, and the live database is the actual truth. Querying it
+directly fixes three things no export can:
+
+1. **The 89 unattributed Vimeo thumbnails.** They have a `post_parent` but no
+   author of their own. One SQL join reaches the parent post's author. No second
+   export needed.
+2. **Attachments the export omitted.** A media-only WXR skips rows in unexpected
+   states; the database lists all of them.
+3. **Orphans — the interesting one.** Files sitting in `uploads/` with no
+   media-library row *at all*. In a folder accumulating since 2017 there are
+   usually plenty, and they are invisible to any export by definition. You're
+   about to pay to transfer and store them, so it's worth knowing what they are
+   before you do.
+
+```bash
+export SSH_USER=root SSH_HOST=184.168.20.91
+export WP_PATH=/var/www/findhomeideas.com     # folder containing wp-config.php
+
+./tools/db_manifest.sh all      # -> data/db-manifest.tsv, data/disk-listing.tsv
+python3 tools/reconcile.py      # -> data/attribution.csv, data/orphans.csv
+```
+
+Both are read-only — `SELECT` and `find`, nothing written on the server, output
+streamed to your Mac. `db_manifest.sh` reads credentials from `wp-config.php` via
+wp-cli (no passwords in the scripts) and resolves the real table prefix rather
+than assuming `wp_`.
+
+**`data/attribution.csv` is the file to actually use.** It supersedes
+`media-manifest.csv`: one row per file *on disk* — originals and thumbnails
+alike, since a thumbnail inherits its original's company — with the company and
+how it was determined. `reconcile.py` also flags rows in the database whose file
+is missing from disk, which are broken media items on the live site.
+
+Don't know `WP_PATH`? `ssh root@184.168.20.91 "find / -name wp-config.php -not -path '*/backup*' 2>/dev/null"`
 
 ## Verify the attribution yourself
 
